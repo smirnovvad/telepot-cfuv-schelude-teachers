@@ -1,121 +1,105 @@
 import sys
 import asyncio
-import telepot
 import telepot.aio
+from telepot import glance
 from telepot.aio.loop import MessageLoop
-from telepot.namedtuple import ReplyKeyboardMarkup
-import csv
+from telepot.namedtuple import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup
+from telepot.aio.delegate import (
+    per_chat_id, per_callback_query_origin, create_open, pave_event_space)
 import datetime
 import config
 import img
+from openpyxl import load_workbook
+
+
+def render(name, day):
+    lessons = name + '    ' + day + '\n'
+    aud = '\n'
+    try:
+        wb = load_workbook('../telepot_cfuv/xlsx/%s.xlsx' % (day))
+        # print(wb.get_sheet_names())
+        # ws = wb['Расписание (4 курс)']
+        islesson = False
+
+        for r in range(3, 10):
+            for c in range(4, 26, 2):
+                for ws in wb:
+                    if ws.cell(row=r, column=c).value is not None and name in ws.cell(row=r, column=c).value:
+                        if islesson:
+                            aud = aud[:-1] + ' ' + ws.cell(row=2, column=c).value
+                        else:
+                            lessons += ws.cell(row=r, column=c).value.replace('\n', ' / ')
+                            islesson = True
+                            if ws.cell(row=r, column=c + 1).value is not None:
+                                aud += ws.cell(row=r, column=c + 1).value.replace('\n', ' / ') + ' ' + ws.cell(row=2, column=c).value
+            lessons += '\n'
+            aud += '\n'
+            islesson = False
+
+        img.render([lessons, aud], (85, 85, 85), name + day)
+
+    except Exception as e:
+        print(e)
+
+
+class SheluderStarter(telepot.aio.helper.ChatHandler):
+    def __init__(self, *args, **kwargs):
+        super(SheluderStarter, self).__init__(*args, **kwargs)
+
+    async def _show_teachers(self, teachers, msg):
+        teachers = [elem for elem in teachers if msg in elem]
+        await self.sender.sendMessage('Выберите преподавателя', reply_markup=InlineKeyboardMarkup(inline_keyboard=list(map(lambda c: [InlineKeyboardButton(text=str(c), callback_data=str(c))], list(teachers)))))
+
+    async def on_chat_message(self, msg):
+        content_type, chat_type, chat_id = glance(msg)
+        print('Chat:', content_type, chat_type, msg['text'], datetime.datetime.fromtimestamp(msg['date']).strftime('%Y-%m-%d %H:%M:%S')
+              )
+        if content_type == 'text':
+            if any(msg['text'] in s for s in config.teachers):
+                await self._show_teachers(config.teachers, msg['text'])
+            else:
+                await self.sender.sendMessage(
+                    'Напишите Фамилию')
+        self.close()  # let Quizzer take over
+
+
+class Sheluder(telepot.aio.helper.CallbackQueryOriginHandler):
+    def __init__(self, *args, **kwargs):
+        super(Sheluder, self).__init__(*args, **kwargs)
+        self._name = ''
+        self._day = ''
+
+    async def _show_days(self, days):
+        await self.editor.editMessageText('Выбери день недели',
+                                          reply_markup=InlineKeyboardMarkup(
+                                              inline_keyboard=list(map(lambda c: [InlineKeyboardButton(text=str(c), callback_data=str(c))], list(days.values())))
+
+                                          )
+                                          )
+
+    async def on_callback_query(self, msg):
+        query_id, from_id, query_data = glance(msg, flavor='callback_query')
+        self.sender = telepot.aio.helper.Sender(self.bot, from_id)
+        if query_data in config.teachers:
+            self._name = query_data
+            await self._show_days(config.days)
+        elif query_data in config.days.values():
+            self._day = query_data
+            render(self._name, self._day)
+            print(self._name, self._day)
+            await self.sender.sendPhoto(open('img/%s.png' % (self._name + self._day), 'rb'))
+
+    async def on__idle(self, event):
+        await asyncio.sleep(5)
+        await self.editor.deleteMessage()
+
+        self.close()
 
 
 def chunks(lst, chunk_count):
     chunk_size = len(lst) // chunk_count
     return [lst[i:i + chunk_size] for i in range(0, len(lst), chunk_size)]
 
-
-async def on_chat_message(msg):
-    content_type, chat_type, chat_id = telepot.glance(msg)
-    print('Chat:', content_type, chat_type, msg['from']['username'], msg['text'], datetime.datetime.fromtimestamp(msg['date']).strftime('%Y-%m-%d %H:%M:%S')
-          )
-    keyboard_courses = ReplyKeyboardMarkup(keyboard=[
-        config.courses
-    ], resize_keyboard=True)
-    if content_type != 'text':
-        return
-    if msg['text'].upper() in config.kurs4.keys():
-        try:
-            with open('csv/Расписание (4 курс) %s.csv' % (config.days[datetime.datetime.today().weekday()]), newline='') as csvfile:
-                reader = csv.reader(csvfile, delimiter=';')
-                lessons = msg['text'] + '\n'
-                aud = '\n'
-                next(csvfile)
-                for row in reader:
-                    lessons += '%s\n' % (row[config.kurs4[msg['text']]].replace('\n', ' / '))
-                    aud += '%s\n' % (row[config.kurs4[msg['text']] + 1].replace('\n', ' / '))
-            img.render([lessons, aud], (85, 85, 85), chat_id)
-            await bot.sendPhoto(chat_id, open('img/%s.png' % chat_id, 'rb'), reply_markup=keyboard_courses)
-        except Exception as e:
-            print(e)
-            await bot.sendMessage(chat_id, text='Расписание не доступно', reply_markup=keyboard_courses)
-
-       # await bot.sendMessage(chat_id, text=lessons, reply_markup=keyboard_courses)
-    elif msg['text'].upper() in config.kurs3.keys():
-        try:
-            with open('csv/Расписание (3 курс) %s.csv' % (config.days[datetime.datetime.today().weekday()]), newline='') as csvfile:
-                reader = csv.reader(csvfile, delimiter=';')
-                lessons = msg['text'] + '\n'
-                aud = '\n'
-                next(csvfile)
-                for row in reader:
-                    lessons += '%s\n' % (row[config.kurs3[msg['text']]].replace('\n', ' / '))
-                    aud += '%s\n' % (row[config.kurs3[msg['text']] + 1].replace('\n', ' / '))
-            img.render([lessons, aud], (85, 85, 85), chat_id)
-            await bot.sendPhoto(chat_id, open('img/%s.png' % chat_id, 'rb'), reply_markup=keyboard_courses)
-        except Exception as e:
-            print(e)
-            await bot.sendMessage(chat_id, text='Расписание не доступно', reply_markup=keyboard_courses)
-
-        # await bot.sendMessage(chat_id, text=shelude, reply_markup=keyboard_courses)
-
-    elif msg['text'].upper() in config.kurs2.keys():
-        try:
-            with open('csv/Расписание (2 курс) %s.csv' % (config.days[datetime.datetime.today().weekday()]), newline='') as csvfile:
-                reader = csv.reader(csvfile, delimiter=';')
-                lessons = msg['text'] + '\n'
-                aud = '\n'
-                next(csvfile)
-                for row in reader:
-                    lessons += '%s\n' % (row[config.kurs2[msg['text']]].replace('\n', ' / '))
-                    aud += '%s\n' % (row[config.kurs2[msg['text']] + 1].replace('\n', ' / '))
-            img.render([lessons, aud], (85, 85, 85), chat_id)
-            await bot.sendPhoto(chat_id, open('img/%s.png' % chat_id, 'rb'), reply_markup=keyboard_courses)
-        except Exception as e:
-            print(e)
-            await bot.sendMessage(chat_id, text='Расписание не доступно', reply_markup=keyboard_courses)
-
-            # await bot.sendMessage(chat_id, text=shelude, reply_markup=keyboard_courses)
-
-    elif msg['text'].upper() in config.kurs1.keys():
-        try:
-            with open('csv/Расписание (1 курс) %s.csv' % (config.days[datetime.datetime.today().weekday()]), newline='') as csvfile:
-                reader = csv.reader(csvfile, delimiter=';')
-                lessons = msg['text'] + '\n'
-                aud = '\n'
-                next(csvfile)
-                for row in reader:
-                    lessons += '%s\n' % (row[config.kurs1[msg['text']]].replace('\n', ' / '))
-                    aud += '%s\n' % (row[config.kurs1[msg['text']] + 1].replace('\n', ' / '))
-            img.render([lessons, aud], (85, 85, 85), chat_id)
-            await bot.sendPhoto(chat_id, open('img/%s.png' % chat_id, 'rb'), reply_markup=keyboard_courses)
-        except Exception as e:
-            print(e)
-            await bot.sendMessage(chat_id, text='Расписание не доступно', reply_markup=keyboard_courses)
-
-        # await bot.sendMessage(chat_id, text=shelude, reply_markup=keyboard_courses)
-
-    elif msg['text'] in config.courses:
-        if msg['text'] == '4 курс':
-            keyboard = ReplyKeyboardMarkup(keyboard=chunks(list(config.kurs4.keys()), 3), resize_keyboard=True)
-            await bot.sendMessage(chat_id, text='Выбери группу', reply_markup=keyboard)
-
-        elif msg['text'] == '3 курс':
-            '''
-            keyboard = ReplyKeyboardMarkup(keyboard=[
-                list(config.kurs3.keys())[:6], list(config.kurs3.keys())[6:]
-            ], resize_keyboard=True)
-            '''
-            keyboard = ReplyKeyboardMarkup(keyboard=chunks(list(config.kurs3.keys()), 3), resize_keyboard=True)
-            await bot.sendMessage(chat_id, text='Выбери группу', reply_markup=keyboard)
-        elif msg['text'] == '2 курс':
-            keyboard = ReplyKeyboardMarkup(keyboard=chunks(list(config.kurs2.keys()), 3), resize_keyboard=True)
-            await bot.sendMessage(chat_id, text='Выбери группу', reply_markup=keyboard)
-        elif msg['text'] == '1 курс':
-            keyboard = ReplyKeyboardMarkup(keyboard=chunks(list(config.kurs1.keys()), 3), resize_keyboard=True)
-            await bot.sendMessage(chat_id, text='Выбери группу', reply_markup=keyboard)
-    else:
-        await bot.sendMessage(chat_id, text='Выбери курс или напиши группу', reply_markup=keyboard_courses)
 
 '''
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -127,11 +111,19 @@ async def on_chat_message(msg):
 
 TOKEN = sys.argv[1]  # get token from command-line
 
-bot = telepot.aio.Bot(TOKEN)
+# bot = telepot.aio.Bot(TOKEN)
+
+bot = telepot.aio.DelegatorBot(TOKEN, [
+    pave_event_space()(
+        per_chat_id(), create_open, SheluderStarter, timeout=3),
+    pave_event_space()(
+        per_callback_query_origin(), create_open, Sheluder, timeout=60),
+])
+
 
 loop = asyncio.get_event_loop()
 
-loop.create_task(MessageLoop(bot, {'chat': on_chat_message, }).run_forever())
+loop.create_task(MessageLoop(bot).run_forever())
 print('Listening ...')
 
 loop.run_forever()
